@@ -60,11 +60,24 @@ public class McpDownloader extends MappingDownloader<McpMapping, McpDatabase> {
     }
     
     @Override
+    protected String getMappingsVersionInternal(String mcver, boolean stable) {
+        McpMappingsJson json = versions.getMappings(mcver).orElse(null);
+        if (stable && json != null && json.latestStable() == -1) {
+            mcver = getLatestMinecraftVersionInternal(true);
+            json = versions.getMappings(mcver).orElse(null);
+        }
+
+        if (json == null)
+            return "Unknown";
+        return (stable ? json.latestStable() : json.latestSnapshot()) + "-" + mcver;
+    }
+
+    @Override
     protected void collectParsers(GsonBuilder builder) {
         super.collectParsers(builder);
         DeserializeIntArrayList.register(builder);
     }
-    
+
     private Mono<McpVersionJson> getVersions(String url) {
         return HttpClient.create()
             .get()

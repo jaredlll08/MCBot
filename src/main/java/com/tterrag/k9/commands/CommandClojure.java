@@ -78,6 +78,7 @@ import discord4j.common.util.Snowflake;
 import lombok.SneakyThrows;
 import lombok.Value;
 import lombok.experimental.Accessors;
+import lombok.experimental.Delegate;
 import lombok.extern.slf4j.Slf4j;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
@@ -97,6 +98,15 @@ public class CommandClojure extends CommandBase {
         static ExecutionResult from(APersistentMap map) {
             return new ExecutionResult(map.get(Clojure.read(":res")), (Boolean) map.get(Clojure.read(":delete-self")));
         }
+    }
+
+    @Value
+    private static class MappingInfo {
+        @Delegate
+        CommandMappings<?> command;
+        String mcVersion;
+        boolean stable;
+        String channel;
     }
     
     private static final Flag FLAG_NOFN = new SimpleFlag('l', "literal", "Used to force result to be interpreted literally, will not attempt to invoke as a function even if the code returns an IFn", false);
@@ -403,7 +413,7 @@ public class CommandClojure extends CommandBase {
                     }
                     return TypeBindingPersistentMap.create(binding.bind("id", $ -> arg1), q);
                 }
-                
+
                 @Override
                 public String toString() {
                     return "Function:\n\t() -> list of quote IDs\n\tID -> Quote\n\n" + binding.toString();
@@ -411,12 +421,44 @@ public class CommandClojure extends CommandBase {
             }
         ));
 
+        // A function for getting mapping data given a mapping channel
+        addContextVar("mappings", ctx -> Mono.just(new AFn() {
+            final TypeBinding<MappingInfo> mappingBinding = new TypeBinding<MappingInfo>("MappingInfo")
+                    .bind("channel", MappingInfo::getChannel)
+                    .bind("stable", MappingInfo::isStable)
+                    .bind("version", cmd -> cmd.getDownloader().getMappingsVersion(cmd.getMcVersion(), cmd.isStable()).block())
+                    .bind("mcversion", MappingInfo::getMcVersion)
+                    .bind("mcversions", cmd -> cmd.getDownloader().getMinecraftVersions().collect(Collectors.toSet()).block())
+                    .bindRecursive("latest_mcversion", Function.identity(), new TypeBinding<MappingInfo>("LatestMinecraftVersion")
+                            .bind("stable", cmd -> cmd.getDownloader().getLatestMinecraftVersion(true).block())
+                            .bind("unstable", cmd -> cmd.getDownloader().getLatestMinecraftVersion(false).block()))
+                    .bindRecursive("latest_version", Function.identity(), new TypeBinding<MappingInfo>("LatestMappingVersion")
+                            .bind("stable", cmd -> cmd.getDownloader().getLatestMappingsVersion(true).block())
+                            .bind("unstable", cmd -> cmd.getDownloader().getLatestMappingsVersion(false).block()));
+
+            @Override
+            public Object invoke(Object arg1) {
+                String channel = (String) arg1;
+                CommandMappings<?> command = CommandMappings.getMappingsCommand(channel);
+                if (command == null)
+                    return null;
+                String mcVersion = command.getMcVersion(ctx).block();
+                boolean stable = command.getDownloader().getLatestMinecraftVersion(true).block().equals(mcVersion);
+                return TypeBindingPersistentMap.create(mappingBinding, new MappingInfo(command, mcVersion, stable, channel));
+            }
+
+            @Override
+            public String toString() {
+                return "Function:\n\tMapping Channel -> MappingInfo\n\n" + mappingBinding;
+            }
+        }));
+
         // A function for looking up tricks, given a name. Optionally pass "true" as second param to force global lookup
         addContextVar("tricks", ctx -> Mono.justOrEmpty(ctx.getK9().getCommands().findCommand(ctx, "trick"))
                 .cast(CommandTrick.class)
                 .transform(Monos.mapOptional(cmd -> cmd.getData(ctx)
                         .map(data -> new AFn() {
-                            
+
             final TypeBinding<TrickData> binding = new TypeBinding<TrickData>("Trick")
                     .bind("type", td -> td.getType().toString())
                     .bind("owner", TrickData::getOwner)
